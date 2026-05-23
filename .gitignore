@@ -3,3 +3,5 @@ __pycache__/
 entries/
 history.csv
 progress_chart.png
+journal.py
+commands_for_project
