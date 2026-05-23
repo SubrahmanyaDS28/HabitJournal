@@ -1,5 +1,0 @@
-ollama serve > /dev/null 2>&1 &		// to start the ollama server
-
-python3 -m venv .venv
-source .venv/bin/activate		// to open the vertual environment
-
