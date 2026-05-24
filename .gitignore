@@ -4,6 +4,6 @@ entries/
 history.csv
 progress_chart.png
 journal.py
-commands_for_project
+commands_for_project.txt
 .env
 run_journal.bat
