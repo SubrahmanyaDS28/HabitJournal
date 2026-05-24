@@ -3,7 +3,7 @@ import requests
 import json
 import csv
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -38,33 +38,50 @@ ENV = load_env_config()
 if not os.path.exists(DIARY_DIR):
     os.makedirs(DIARY_DIR)
 
-def analyze_historical_weaknesses():
-    """Reads history.csv to evaluate the last 7 entries for routines and traps."""
+def calculate_advanced_metrics():
+    """Parses full csv history to calculate 7-day windows, current streaks, and personal records."""
     if not os.path.exists(CSV_FILE):
         return None
         
     try:
         with open(CSV_FILE, "r") as f:
-            reader = list(csv.DictReader(f))
+            full_history = list(csv.DictReader(f))
             
-        # Grab up to the last 7 entries
-        recent_history = reader[-7:]
-        if not recent_history:
+        if not full_history:
             return None
             
+        # 1. Standard 7-Day Window Metrics
+        recent_history = full_history[-7:]
         total_days = len(recent_history)
-        badminton_days = 0
-        total_planks = 0
-        total_diet_score = 0.0
+        badminton_days = sum(1 for r in recent_history if float(r.get("Badminton_Mins", 0) or 0) > 0)
+        total_planks = sum(int(r.get("Plank_Sets", 0) or 0) for r in recent_history)
+        avg_diet = sum(float(r.get("Diet_Score", 100) or 100) for r in recent_history) / total_days
         
-        for row in recent_history:
+        # 2. All-Time Personal Records (PRs)
+        max_badminton = max(float(r.get("Badminton_Mins", 0) or 0) for r in full_history)
+        max_squats = max(int(r.get("Squat_Reps", 0) or 0) for r in full_history)
+        
+        # 3. Current Streak Calculations (Consecutive Active Days counting backward from yesterday)
+        badminton_streak = 0
+        plank_streak = 0
+        
+        # Sort full history sequentially by date just to be mathematically bulletproof
+        sorted_history = sorted(full_history, key=lambda x: x.get("Date", ""))
+        
+        # Calculate Badminton Streak
+        for row in reversed(sorted_history):
             if float(row.get("Badminton_Mins", 0) or 0) > 0:
-                badminton_days += 1
-            total_planks += int(row.get("Plank_Sets", 0) or 0)
-            total_diet_score += float(row.get("Diet_Score", 100) or 100)
-            
-        avg_diet = total_diet_score / total_days
-        
+                badminton_streak += 1
+            else:
+                break # Streak broken
+                
+        # Calculate Plank Streak
+        for row in reversed(sorted_history):
+            if int(row.get("Plank_Sets", 0) or 0) > 0:
+                plank_streak += 1
+            else:
+                break # Streak broken
+
         # Compile targeted warning flags
         warnings = []
         if badminton_days < 3 and total_days >= 4:
@@ -79,25 +96,35 @@ def analyze_historical_weaknesses():
             "badminton_frequency": f"{badminton_days}/{total_days}",
             "total_planks": total_planks,
             "avg_diet": round(avg_diet, 1),
+            "badminton_streak": badminton_streak,
+            "plank_streak": plank_streak,
+            "pr_badminton": max_badminton,
+            "pr_squats": max_squats,
             "warnings": warnings
         }
     except Exception:
         return None
 
-def query_local_ai(user_raw_text, quick_stats, historical_summary):
-    """Uses the local model to generate coach responses, factoring in historical trends."""
+def query_local_ai(user_raw_text, quick_stats, analytics):
+    """Uses the local model to generate coach responses, factoring in streaks and historical trends."""
     system_instruction = (
         "You are an encouraging personal health and routine coach for an embedded systems engineer.\n"
         "Review the user's raw daily notes, current metrics, and historical warnings. Provide a supportive 3-4 sentence summary.\n"
-        "Praise their consistency and address any lingering multi-day weaknesses mentioned in the data."
+        "Acknowledge any active multi-day streaks or personal milestones proudly to keep their motivation high!"
     )
     
     history_context = "No historical warnings."
-    if historical_summary and historical_summary["warnings"]:
-        history_context = " ".join(historical_summary["warnings"])
+    streaks_context = "No active streaks."
+    
+    if analytics:
+        if analytics["warnings"]:
+            history_context = " ".join(analytics["warnings"])
+        streaks_context = f"Badminton Streak: {analytics['badminton_streak']} days, Plank Streak: {analytics['plank_streak']} days."
         
     contextual_prompt = (
-        f"--- HISTORICAL TRENDS (LAST 7 DAYS) ---\n{history_context}\n\n"
+        f"--- HISTORICAL TRACKING ---\n"
+        f"Warnings: {history_context}\n"
+        f"Active Streaks: {streaks_context}\n\n"
         f"--- TODAY'S DATA ---\n"
         f"Badminton: {quick_stats['badminton']} mins, Plank Sets: {quick_stats['planks']}, "
         f"Squats: {quick_stats['squats']}, Diet Discipline Score: {quick_stats['diet_score']}/100.\n"
@@ -180,29 +207,31 @@ def main():
     args = parse_arguments()
     date_str = datetime.now().strftime("%Y-%m-%d")
     
-    # Run the Historical Analysis Engine FIRST
-    history_report = analyze_historical_weaknesses()
+    # Run the Advanced Analytics Engine Engine FIRST
+    analytics = calculate_advanced_metrics()
     
     cli_mode = any(v is not None for v in [args.badminton, args.planks, args.squats, args.notes])
     
     if not cli_mode:
         console.clear()
-        console.print(Panel("[bold cyan]Personal Habit Monitor & Interactive Diary v2.2[/bold cyan]\n[dim]Historical Trend Analytics Engine Enabled[/dim]", expand=False))
+        console.print(Panel("[bold cyan]Personal Habit Monitor & Interactive Diary v2.3[/bold cyan]\n[dim]Streak Analytics & Milestone Tracker Active[/dim]", expand=False))
         
-        # Display the Historical Report explicitly if data exists
-        if history_report:
-            table = Table(title="📊 Weekly Health & Routine Status Report", title_justify="left")
-            table.add_column("Metric Description", style="cyan")
+        # Display the Advanced Analytics Report explicitly if data exists
+        if analytics:
+            table = Table(title="📊 Habit Consistency & Performance Dashboard", title_justify="left")
+            table.add_column("Routine Metric", style="cyan")
             table.add_column("7-Day Standing", style="magenta")
+            table.add_column("Current Streak / PR", style="green")
             
-            table.add_row("Badminton Consistency", f"{history_report['badminton_frequency']} days active")
-            table.add_row("Core Strength (Planks)", f"{history_report['total_planks']} sets executed")
-            table.add_row("Diet Discipline Average", f"{history_report['avg_diet']}% adherence")
+            table.add_row("Badminton Cardio", f"{analytics['badminton_frequency']} days active", f"🔥 {analytics['badminton_streak']} Day Streak (PR: {analytics['pr_badminton']}m)")
+            table.add_row("Core Work (Planks)", f"{analytics['total_planks']} sets done", f"⚡ {analytics['plank_streak']} Day Streak")
+            table.add_row("Diet Discipline", f"{analytics['avg_diet']}% adherence", f"🎯 Milestone Active")
+            table.add_row("Leg Conditioning", "--", f"👑 Squat Max PR: {analytics['pr_squats']} reps")
             console.print(table)
             
-            if history_report["warnings"]:
+            if analytics["warnings"]:
                 console.print("[bold yellow]🚨 System Diagnosis / Weakness Signals Detected:[/bold yellow]")
-                for warn in history_report["warnings"]:
+                for warn in analytics["warnings"]:
                     console.print(f"  {warn}")
                 console.print("")
         
@@ -248,7 +277,7 @@ def main():
     generate_trend_chart()
     
     console.print("\n[bold magenta]Generating peer coach analysis via local AI...[/bold magenta]")
-    ai_response = query_local_ai(user_input, stats, history_report)
+    ai_response = query_local_ai(user_input, stats, analytics)
     
     markdown_output = (
         f"## 🕒 Activity Dashboard\n"
