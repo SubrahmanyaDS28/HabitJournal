@@ -1,0 +1,20 @@
+ollama serve > /dev/null 2>&1 &		// to start the ollama server
+
+python3 -m venv .venv
+source .venv/bin/activate		// to open the vertual environment
+
+🔄 The Daily Cycle: Using push and pull
+Once your workspace link is established, your normal git cycle boils down to a few basic terms:
+
+git pull: Downloads and merges any updates from GitHub down to your computer. Run this before you start writing any new features to ensure you have the latest code version if you happen to modify it from another PC.
+
+git status: Checks to see what files you have modified since your last save.
+
+git add .: Groups your modified scripts together for staging.
+
+git commit -m "Brief description of changes": Packages the changes up into a fresh checkpoint.
+
+git push: Sends those local commits up to your GitHub dashboard online.
+
+
+git token : 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
