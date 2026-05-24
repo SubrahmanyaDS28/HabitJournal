@@ -5,3 +5,4 @@ history.csv
 progress_chart.png
 journal.py
 commands_for_project
+.env
