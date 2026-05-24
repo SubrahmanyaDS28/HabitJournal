@@ -7,6 +7,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.table import Table
 
 # Initialize Rich console
 console = Console()
@@ -37,18 +38,69 @@ ENV = load_env_config()
 if not os.path.exists(DIARY_DIR):
     os.makedirs(DIARY_DIR)
 
-def query_local_ai(user_raw_text, quick_stats):
-    """Uses the configured local model to generate coach responses."""
+def analyze_historical_weaknesses():
+    """Reads history.csv to evaluate the last 7 entries for routines and traps."""
+    if not os.path.exists(CSV_FILE):
+        return None
+        
+    try:
+        with open(CSV_FILE, "r") as f:
+            reader = list(csv.DictReader(f))
+            
+        # Grab up to the last 7 entries
+        recent_history = reader[-7:]
+        if not recent_history:
+            return None
+            
+        total_days = len(recent_history)
+        badminton_days = 0
+        total_planks = 0
+        total_diet_score = 0.0
+        
+        for row in recent_history:
+            if float(row.get("Badminton_Mins", 0) or 0) > 0:
+                badminton_days += 1
+            total_planks += int(row.get("Plank_Sets", 0) or 0)
+            total_diet_score += float(row.get("Diet_Score", 100) or 100)
+            
+        avg_diet = total_diet_score / total_days
+        
+        # Compile targeted warning flags
+        warnings = []
+        if badminton_days < 3 and total_days >= 4:
+            warnings.append(f"🔴 Low Cardio: Played badminton only {badminton_days}/{total_days} days.")
+        if total_planks < (total_days * 1):
+            warnings.append(f"🟠 Core Slippage: Averaging less than 1 plank set per day ({total_planks} total).")
+        if avg_diet < 75.0:
+            warnings.append(f"⚠️  Nutritional Risk: 7-day diet discipline dropped to {avg_diet:.1f}%. Watch out for carb traps!")
+            
+        return {
+            "days": total_days,
+            "badminton_frequency": f"{badminton_days}/{total_days}",
+            "total_planks": total_planks,
+            "avg_diet": round(avg_diet, 1),
+            "warnings": warnings
+        }
+    except Exception:
+        return None
+
+def query_local_ai(user_raw_text, quick_stats, historical_summary):
+    """Uses the local model to generate coach responses, factoring in historical trends."""
     system_instruction = (
         "You are an encouraging personal health and routine coach for an embedded systems engineer.\n"
-        "Review the user's raw daily notes and their metrics. Provide a supportive 3-4 sentence summary.\n"
-        "Praise their consistency (like badminton or core work) and gently highlight potential calorie traps."
+        "Review the user's raw daily notes, current metrics, and historical warnings. Provide a supportive 3-4 sentence summary.\n"
+        "Praise their consistency and address any lingering multi-day weaknesses mentioned in the data."
     )
     
+    history_context = "No historical warnings."
+    if historical_summary and historical_summary["warnings"]:
+        history_context = " ".join(historical_summary["warnings"])
+        
     contextual_prompt = (
-        f"Metrics Today -> Badminton: {quick_stats['badminton']} mins, "
-        f"Plank Sets: {quick_stats['planks']}, Squats: {quick_stats['squats']}, "
-        f"Diet Discipline Score: {quick_stats['diet_score']}/100.\n"
+        f"--- HISTORICAL TRENDS (LAST 7 DAYS) ---\n{history_context}\n\n"
+        f"--- TODAY'S DATA ---\n"
+        f"Badminton: {quick_stats['badminton']} mins, Plank Sets: {quick_stats['planks']}, "
+        f"Squats: {quick_stats['squats']}, Diet Discipline Score: {quick_stats['diet_score']}/100.\n"
         f"Notes: {user_raw_text}"
     )
     
@@ -79,35 +131,29 @@ def generate_trend_chart():
     """Reads the local CSV data and generates a clean habit tracking visualization."""
     try:
         import matplotlib
-        matplotlib.use('Agg') # Prevents headless WSL execution display errors
+        matplotlib.use('Agg')
         import matplotlib.pyplot as plt
         
-        dates, badminton, planks, diet_scores = [], [], [], []
-        
+        dates, badminton, planks = [], [], []
         if not os.path.exists(CSV_FILE):
             return
 
         with open(CSV_FILE, "r") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # Use standard get method fallbacks to prevent historical row formatting crashes
                 dates.append(row.get("Date", "")[-5:])
                 badminton.append(float(row.get("Badminton_Mins", 0) or 0))
                 planks.append(int(row.get("Plank_Sets", 0) or 0))
-                diet_scores.append(float(row.get("Diet_Score", 100) or 100))
         
         if not dates:
             return
 
         fig, ax1 = plt.subplots(figsize=(10, 4))
-        
-        # Plot Badminton metrics as a line chart
         ax1.set_xlabel("Date")
         ax1.set_ylabel("Badminton (Mins)", color="tab:blue")
         ax1.plot(dates, badminton, color="tab:blue", marker="o", linewidth=2, label="Badminton")
         ax1.tick_params(axis="y", labelcolor="tab:blue")
         
-        # Plot Plank sets cleanly on a shared x-axis
         ax2 = ax1.twinx()
         ax2.set_ylabel("Plank (Sets)", color="tab:orange")
         ax2.step(dates, planks, color="tab:orange", where="mid", linestyle="--", label="Planks")
@@ -118,9 +164,9 @@ def generate_trend_chart():
         plt.savefig("progress_chart.png")
         plt.close()
         console.print("[bold green]📈 Progress chart automatically updated: progress_chart.png[/bold green]")
-    except Exception as e:
-        # Replaced the silent 'pass' statement with an informative debug logger banner
-        console.print(f"[bold red]⚠ Chart Generation Warning: {e}[/bold red]")
+    except Exception:
+        pass 
+
 def parse_arguments():
     """Defines flexible command line flags for swift automation logging."""
     parser = argparse.ArgumentParser(description="HabitJournal CLI Automation Driver")
@@ -134,15 +180,33 @@ def main():
     args = parse_arguments()
     date_str = datetime.now().strftime("%Y-%m-%d")
     
-    # Check if ANY command line arguments were provided
+    # Run the Historical Analysis Engine FIRST
+    history_report = analyze_historical_weaknesses()
+    
     cli_mode = any(v is not None for v in [args.badminton, args.planks, args.squats, args.notes])
     
     if not cli_mode:
-        # INTERACTIVE MODE (Fallback when no flags are supplied)
         console.clear()
-        console.print(Panel("[bold cyan]Personal Habit Monitor & Interactive Diary v2.1[/bold cyan]\n[dim]CLI Execution & Config Architecture[/dim]", expand=False))
+        console.print(Panel("[bold cyan]Personal Habit Monitor & Interactive Diary v2.2[/bold cyan]\n[dim]Historical Trend Analytics Engine Enabled[/dim]", expand=False))
         
-        console.print("\n[bold yellow]Step 1: Log Your Core Engineering Metrics[/bold yellow]")
+        # Display the Historical Report explicitly if data exists
+        if history_report:
+            table = Table(title="📊 Weekly Health & Routine Status Report", title_justify="left")
+            table.add_column("Metric Description", style="cyan")
+            table.add_column("7-Day Standing", style="magenta")
+            
+            table.add_row("Badminton Consistency", f"{history_report['badminton_frequency']} days active")
+            table.add_row("Core Strength (Planks)", f"{history_report['total_planks']} sets executed")
+            table.add_row("Diet Discipline Average", f"{history_report['avg_diet']}% adherence")
+            console.print(table)
+            
+            if history_report["warnings"]:
+                console.print("[bold yellow]🚨 System Diagnosis / Weakness Signals Detected:[/bold yellow]")
+                for warn in history_report["warnings"]:
+                    console.print(f"  {warn}")
+                console.print("")
+        
+        console.print("[bold yellow]Step 1: Log Your Core Engineering Metrics[/bold yellow]")
         badminton_mins = float(Prompt.ask("Badminton play time today (in minutes)", default="0"))
         plank_sets = int(Prompt.ask("How many 1-minute plank sets completed", default="0"))
         squat_reps = int(Prompt.ask("Total bodyweight squats completed", default="0"))
@@ -159,14 +223,11 @@ def main():
         console.print("\n[bold yellow]Step 2: Free Flow Diary[/bold yellow]")
         user_input = Prompt.ask("[bold green]>>>[/bold green]")
     else:
-        # AUTOMATED CLI MODE (Skips prompts completely)
         console.print("[bold green]🚀 Running in automated CLI mode...[/bold green]")
         badminton_mins = args.badminton if args.badminton is not None else 0.0
         plank_sets = args.planks if args.planks is not None else 0
         squat_reps = args.squats if args.squats is not None else 0
         user_input = args.notes if args.notes is not None else "No journal entry notes provided."
-        
-        # In quick CLI mode, default to a neutral/placeholder diet pass condition
         diet_score_pct = 100
 
     stats = {
@@ -182,12 +243,12 @@ def main():
     if found_carbs:
         console.print(f"[bold yellow]⚠️  Python Scanner: High-carb indicators noted locally: {found_carbs}[/bold yellow]")
     
-    # Process files
+    # Process updates
     log_to_csv(date_str, stats)
     generate_trend_chart()
     
     console.print("\n[bold magenta]Generating peer coach analysis via local AI...[/bold magenta]")
-    ai_response = query_local_ai(user_input, stats)
+    ai_response = query_local_ai(user_input, stats, history_report)
     
     markdown_output = (
         f"## 🕒 Activity Dashboard\n"
